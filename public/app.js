@@ -5,48 +5,93 @@ const strokeWidthInput = document.getElementById('strokeWidth');
 const strokeWidthValueSpan = document.getElementById('strokeWidthValue');
 const clearButton = document.getElementById('clearButton');
 const quickColorButtons = document.querySelectorAll('.quick-color-btn');
+const roomIdDisplay = document.getElementById('roomIdDisplay');
 
 let drawing = false;
 let currentColor = colorPicker.value;
 let currentStrokeWidth = parseInt(strokeWidthInput.value);
+let drawingHistory = [];
 
-// Initialize canvas context
-ctx.strokeStyle = currentColor;
-ctx.lineWidth = currentStrokeWidth;
+// Zoom and Pan state
+let zoom = 1;
+let offsetX = 0;
+let offsetY = 0;
+let isPanning = false;
+let lastMouseX = 0;
+let lastMouseY = 0;
+
 ctx.lineCap = 'round';
 ctx.lineJoin = 'round';
 
-function resizeCanvas() {
-    // Get the device pixel ratio for sharper drawing on high-DPI screens
+function getTransformedPoint(x, y) {
+    const dpr = window.devicePixelRatio || 1;
+    return {
+        x: (x * dpr - offsetX) / zoom,
+        y: (y * dpr - offsetY) / zoom
+    };
+}
+
+
+function redrawCanvas() {
     const dpr = window.devicePixelRatio || 1;
     canvas.width = window.innerWidth * dpr;
     canvas.height = window.innerHeight * dpr;
-    ctx.scale(dpr, dpr);
-
-    // Set canvas display size for CSS
     canvas.style.width = window.innerWidth + 'px';
     canvas.style.height = window.innerHeight + 'px';
 
-    // When resizing, we might lose the content, so we would ideally redraw the history here.
-    // For now, it will just clear. Redrawing history will be handled later.
-    // Ensure styles are reapplied after context reset from resize
+    ctx.save();
+    ctx.translate(offsetX, offsetY);
+    ctx.scale(zoom, zoom);
+    
+    ctx.clearRect(-offsetX / zoom, -offsetY / zoom, canvas.width / zoom, canvas.height / zoom);
+
+    drawingHistory.forEach(stroke => drawStroke(stroke, true));
+    
+    ctx.restore();
+
     ctx.strokeStyle = currentColor;
     ctx.lineWidth = currentStrokeWidth;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 }
 
-function drawStroke(stroke) {
+function drawStroke(stroke, fromHistory = false) {
+    if (!fromHistory) {
+        drawingHistory.push(stroke);
+    }
+    
+    const savedColor = ctx.strokeStyle;
+    const savedWidth = ctx.lineWidth;
+
     ctx.strokeStyle = stroke.color;
     ctx.lineWidth = stroke.width;
-    ctx.beginPath();
-    ctx.moveTo(stroke.x1, stroke.y1);
-    ctx.lineTo(stroke.x2, stroke.y2);
-    ctx.stroke();
+
+    // When drawing from history, we need to be in the transformed space
+    if (fromHistory) {
+        ctx.beginPath();
+        ctx.moveTo(stroke.x1, stroke.y1);
+        ctx.lineTo(stroke.x2, stroke.y2);
+        ctx.stroke();
+    } else {
+        // When drawing a new stroke, draw it directly on the canvas without transformation
+        const dpr = window.devicePixelRatio || 1;
+        ctx.save();
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // Use the base transformation
+        ctx.beginPath();
+        ctx.moveTo(lastMouseX * dpr, lastMouseY * dpr);
+        ctx.lineTo(stroke.x2_screen, stroke.y2_screen);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+
+    ctx.strokeStyle = savedColor;
+    ctx.lineWidth = savedWidth;
 }
 
-window.addEventListener('resize', resizeCanvas);
-resizeCanvas(); // Initial canvas resize
+
+window.addEventListener('resize', redrawCanvas);
+
 
 colorPicker.addEventListener('change', (e) => {
     currentColor = e.target.value;
@@ -64,116 +109,135 @@ quickColorButtons.forEach(button => {
         const selectedColor = button.getAttribute('data-color');
         currentColor = selectedColor;
         ctx.strokeStyle = currentColor;
-        colorPicker.value = selectedColor; // Update main color picker
+        colorPicker.value = selectedColor;
     });
-});
-
-
-// Basic drawing functionality (will be integrated with WebSocket later)
-canvas.addEventListener('mousedown', (e) => {
-    drawing = true;
-    ctx.beginPath();
-    ctx.moveTo(e.clientX, e.clientY);
-});
-
-canvas.addEventListener('mouseup', () => {
-    drawing = false;
-    ctx.closePath();
 });
 
 let lastX = 0;
 let lastY = 0;
 
-canvas.addEventListener('mousedown', (e) => {
+function handleStart(clientX, clientY) {
+    if (isPanning) {
+        [lastMouseX, lastMouseY] = [clientX, clientY];
+        return;
+    }
     drawing = true;
-    [lastX, lastY] = [e.clientX, e.clientY];
-    ctx.beginPath();
-    ctx.moveTo(lastX, lastY);
-});
+    const point = getTransformedPoint(clientX, clientY);
+    [lastX, lastY] = [point.x, point.y];
+    [lastMouseX, lastMouseY] = [clientX, clientY];
+}
+
+function handleMove(clientX, clientY) {
+    if (isPanning) {
+        const dx = clientX - lastMouseX;
+        const dy = clientY - lastMouseY;
+        offsetX += dx * (window.devicePixelRatio || 1);
+        offsetY += dy * (window.devicePixelRatio || 1);
+        [lastMouseX, lastMouseY] = [clientX, clientY];
+        redrawCanvas();
+        return;
+    }
+
+    if (!drawing) return;
+
+    const point = getTransformedPoint(clientX, clientY);
+    const newX = point.x;
+    const newY = point.y;
+
+    const strokeDataForServer = {
+        x1: lastX,
+        y1: lastY,
+        x2: newX,
+        y2: newY,
+        color: currentColor,
+        width: currentStrokeWidth
+    };
+
+    // For local drawing, we need screen coordinates
+    const strokeDataForLocal = { ...strokeDataForServer, x2_screen: clientX, y2_screen: clientY };
+    
+    ctx.strokeStyle = currentColor;
+    ctx.lineWidth = currentStrokeWidth;
+    drawStroke(strokeDataForLocal, false);
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'draw', data: strokeDataForServer }));
+    }
+
+    [lastX, lastY] = [newX, newY];
+    [lastMouseX, lastMouseY] = [clientX, clientY];
+}
+
+function handleEnd() {
+    drawing = false;
+}
+
+canvas.addEventListener('mousedown', (e) => handleStart(e.clientX, e.clientY));
+canvas.addEventListener('mousemove', (e) => handleMove(e.clientX, e.clientY));
+canvas.addEventListener('mouseup', handleEnd);
+canvas.addEventListener('mouseout', handleEnd);
 
 canvas.addEventListener('touchstart', (e) => {
-    e.preventDefault(); // Prevent scrolling
-    drawing = true;
+    e.preventDefault();
     const touch = e.touches[0];
-    [lastX, lastY] = [touch.clientX, touch.clientY];
-    ctx.beginPath();
-    ctx.moveTo(lastX, lastY);
+    handleStart(touch.clientX, touch.clientY);
 });
-
-
-canvas.addEventListener('mousemove', (e) => {
-    if (!drawing) return;
-
-    ctx.lineTo(e.clientX, e.clientY);
-    ctx.stroke();
-
-    // Send draw event to WebSocket server
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        const strokeData = {
-            x1: lastX,
-            y1: lastY,
-            x2: e.clientX,
-            y2: e.clientY,
-            color: currentColor,
-            width: currentStrokeWidth
-        };
-        ws.send(JSON.stringify({ type: 'draw', data: strokeData }));
-    }
-    [lastX, lastY] = [e.clientX, e.clientY];
-});
-
 canvas.addEventListener('touchmove', (e) => {
-    e.preventDefault(); // Prevent scrolling
-    if (!drawing) return;
-
+    e.preventDefault();
     const touch = e.touches[0];
-    ctx.lineTo(touch.clientX, touch.clientY);
-    ctx.stroke();
+    handleMove(touch.clientX, touch.clientY);
+});
+canvas.addEventListener('touchend', handleEnd);
+canvas.addEventListener('touchcancel', handleEnd);
 
-    // Send draw event to WebSocket server
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        const strokeData = {
-            x1: lastX,
-            y1: lastY,
-            x2: touch.clientX,
-            y2: touch.clientY,
-            color: currentColor,
-            width: currentStrokeWidth
-        };
-        ws.send(JSON.stringify({ type: 'draw', data: strokeData }));
+window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') {
+        isPanning = true;
+        canvas.style.cursor = 'move';
     }
-    [lastX, lastY] = [touch.clientX, touch.clientY];
 });
 
-
-canvas.addEventListener('mouseup', () => {
-    drawing = false;
-    ctx.closePath();
+window.addEventListener('keyup', (e) => {
+    if (e.code === 'Space') {
+        isPanning = false;
+        canvas.style.cursor = 'crosshair';
+    }
 });
 
-canvas.addEventListener('touchend', () => {
-    drawing = false;
-    ctx.closePath();
+canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const dpr = window.devicePixelRatio || 1;
+    const mouseX = e.clientX * dpr;
+    const mouseY = e.clientY * dpr;
+    const zoomFactor = 1.1;
+
+    const wheel = e.deltaY < 0 ? 1 : -1;
+    const newZoom = zoom * Math.pow(zoomFactor, wheel);
+
+    const mousePointX = (mouseX - offsetX) / zoom;
+    const mousePointY = (mouseY - offsetY) / zoom;
+
+    offsetX = mouseX - mousePointX * newZoom;
+    offsetY = mouseY - mousePointY * newZoom;
+    zoom = newZoom;
+
+    redrawCanvas();
 });
+
 
 clearButton.addEventListener('click', () => {
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'clear' }));
     }
-    // Clear the canvas locally immediately
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    // Redraw with current settings after clear
-    ctx.strokeStyle = currentColor;
-    ctx.lineWidth = currentStrokeWidth;
+    drawingHistory = [];
+    redrawCanvas();
 });
 
-// WebSocket connection
 let ws;
 let roomId;
 
-
 function generateRoomId() {
-    return Math.random().toString(36).substring(2, 8); // 6-character alphanumeric
+    return Math.random().toString(36).substring(2, 8);
 }
 
 function getOrCreateRoomId() {
@@ -187,34 +251,28 @@ function getOrCreateRoomId() {
 }
 
 roomId = getOrCreateRoomId();
-console.log(`Joining room: ${roomId}`);
+roomIdDisplay.textContent = roomId;
 
 function connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${protocol}//${window.location.host}?room=${roomId}`);
 
-    ws.onopen = () => {
-        console.log('Connected to WebSocket server');
-    };
+    ws.onopen = () => console.log('Connected to WebSocket server');
 
     ws.onmessage = (event) => {
         const message = JSON.parse(event.data);
         switch (message.type) {
             case 'draw':
-                drawStroke(message.data);
+                drawingHistory.push(message.data);
+                redrawCanvas();
                 break;
             case 'clear':
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                // Re-apply current stroke settings
-                ctx.strokeStyle = currentColor;
-                ctx.lineWidth = currentStrokeWidth;
+                drawingHistory = [];
+                redrawCanvas();
                 break;
             case 'history':
-                ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear before drawing history
-                message.data.forEach(stroke => drawStroke(stroke));
-                // Re-apply current stroke settings after history is drawn
-                ctx.strokeStyle = currentColor;
-                ctx.lineWidth = currentStrokeWidth;
+                drawingHistory = message.data;
+                redrawCanvas();
                 break;
             default:
                 console.warn('Unknown message type:', message.type);
@@ -232,6 +290,6 @@ function connectWebSocket() {
     };
 }
 
+redrawCanvas();
 connectWebSocket();
-
-
+canvas.style.cursor = 'crosshair';
