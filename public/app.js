@@ -6,6 +6,8 @@ const strokeWidthValueSpan = document.getElementById('strokeWidthValue');
 const clearButton = document.getElementById('clearButton');
 const quickColorButtons = document.querySelectorAll('.quick-color-btn');
 const roomIdDisplay = document.getElementById('roomIdDisplay');
+const toggleControls = document.getElementById('toggleControls');
+const controls = document.getElementById('controls');
 
 let drawing = false;
 let currentColor = colorPicker.value;
@@ -19,6 +21,7 @@ let offsetY = 0;
 let isPanning = false;
 let lastMouseX = 0;
 let lastMouseY = 0;
+let initialPinchDistance = null;
 
 ctx.lineCap = 'round';
 ctx.lineJoin = 'round';
@@ -42,51 +45,21 @@ function redrawCanvas() {
     ctx.save();
     ctx.translate(offsetX, offsetY);
     ctx.scale(zoom, zoom);
-    
+
     ctx.clearRect(-offsetX / zoom, -offsetY / zoom, canvas.width / zoom, canvas.height / zoom);
 
-    drawingHistory.forEach(stroke => drawStroke(stroke, true));
-    
-    ctx.restore();
+    drawingHistory.forEach(stroke => drawStroke(stroke));
 
-    ctx.strokeStyle = currentColor;
-    ctx.lineWidth = currentStrokeWidth;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
+    ctx.restore();
 }
 
-function drawStroke(stroke, fromHistory = false) {
-    if (!fromHistory) {
-        drawingHistory.push(stroke);
-    }
-    
-    const savedColor = ctx.strokeStyle;
-    const savedWidth = ctx.lineWidth;
-
+function drawStroke(stroke) {
     ctx.strokeStyle = stroke.color;
     ctx.lineWidth = stroke.width;
-
-    // When drawing from history, we need to be in the transformed space
-    if (fromHistory) {
-        ctx.beginPath();
-        ctx.moveTo(stroke.x1, stroke.y1);
-        ctx.lineTo(stroke.x2, stroke.y2);
-        ctx.stroke();
-    } else {
-        // When drawing a new stroke, draw it directly on the canvas without transformation
-        const dpr = window.devicePixelRatio || 1;
-        ctx.save();
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // Use the base transformation
-        ctx.beginPath();
-        ctx.moveTo(lastMouseX * dpr, lastMouseY * dpr);
-        ctx.lineTo(stroke.x2_screen, stroke.y2_screen);
-        ctx.stroke();
-        ctx.restore();
-    }
-
-
-    ctx.strokeStyle = savedColor;
-    ctx.lineWidth = savedWidth;
+    ctx.beginPath();
+    ctx.moveTo(stroke.x1, stroke.y1);
+    ctx.lineTo(stroke.x2, stroke.y2);
+    ctx.stroke();
 }
 
 
@@ -95,20 +68,17 @@ window.addEventListener('resize', redrawCanvas);
 
 colorPicker.addEventListener('change', (e) => {
     currentColor = e.target.value;
-    ctx.strokeStyle = currentColor;
 });
 
 strokeWidthInput.addEventListener('input', (e) => {
     currentStrokeWidth = parseInt(e.target.value);
     strokeWidthValueSpan.textContent = currentStrokeWidth;
-    ctx.lineWidth = currentStrokeWidth;
 });
 
 quickColorButtons.forEach(button => {
     button.addEventListener('click', () => {
         const selectedColor = button.getAttribute('data-color');
         currentColor = selectedColor;
-        ctx.strokeStyle = currentColor;
         colorPicker.value = selectedColor;
     });
 });
@@ -124,15 +94,15 @@ function handleStart(clientX, clientY) {
     drawing = true;
     const point = getTransformedPoint(clientX, clientY);
     [lastX, lastY] = [point.x, point.y];
-    [lastMouseX, lastMouseY] = [clientX, clientY];
 }
 
-function handleMove(clientX, clientY) {
+const handleMove = throttle((clientX, clientY) => {
     if (isPanning) {
         const dx = clientX - lastMouseX;
         const dy = clientY - lastMouseY;
-        offsetX += dx * (window.devicePixelRatio || 1);
-        offsetY += dy * (window.devicePixelRatio || 1);
+        const dpr = window.devicePixelRatio || 1;
+        offsetX += dx * dpr;
+        offsetY += dy * dpr;
         [lastMouseX, lastMouseY] = [clientX, clientY];
         redrawCanvas();
         return;
@@ -144,7 +114,7 @@ function handleMove(clientX, clientY) {
     const newX = point.x;
     const newY = point.y;
 
-    const strokeDataForServer = {
+    const stroke = {
         x1: lastX,
         y1: lastY,
         x2: newX,
@@ -153,23 +123,21 @@ function handleMove(clientX, clientY) {
         width: currentStrokeWidth
     };
 
-    // For local drawing, we need screen coordinates
-    const strokeDataForLocal = { ...strokeDataForServer, x2_screen: clientX, y2_screen: clientY };
-    
-    ctx.strokeStyle = currentColor;
-    ctx.lineWidth = currentStrokeWidth;
-    drawStroke(strokeDataForLocal, false);
+    drawingHistory.push(stroke);
+    drawStroke(stroke); // Draw the new stroke immediately
+    redrawCanvas();
+
 
     if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'draw', data: strokeDataForServer }));
+        ws.send(JSON.stringify({ type: 'draw', data: stroke }));
     }
 
     [lastX, lastY] = [newX, newY];
-    [lastMouseX, lastMouseY] = [clientX, clientY];
-}
+}, 16); // Throttle to ~60fps
 
 function handleEnd() {
     drawing = false;
+    initialPinchDistance = null;
 }
 
 canvas.addEventListener('mousedown', (e) => handleStart(e.clientX, e.clientY));
@@ -177,18 +145,59 @@ canvas.addEventListener('mousemove', (e) => handleMove(e.clientX, e.clientY));
 canvas.addEventListener('mouseup', handleEnd);
 canvas.addEventListener('mouseout', handleEnd);
 
+function getDistance(touches) {
+    return Math.sqrt(Math.pow(touches[0].clientX - touches[1].clientX, 2) + Math.pow(touches[0].clientY - touches[1].clientY, 2));
+}
+
 canvas.addEventListener('touchstart', (e) => {
-    e.preventDefault();
-    const touch = e.touches[0];
-    handleStart(touch.clientX, touch.clientY);
+    if (e.touches.length === 1) {
+        drawing = true;
+        const touch = e.touches[0];
+        handleStart(touch.clientX, touch.clientY);
+    } else if (e.touches.length === 2) {
+        drawing = false;
+        initialPinchDistance = getDistance(e.touches);
+    } else {
+        drawing = false;
+    }
 });
+
 canvas.addEventListener('touchmove', (e) => {
-    e.preventDefault();
-    const touch = e.touches[0];
-    handleMove(touch.clientX, touch.clientY);
+    if (e.touches.length === 1 && drawing) {
+        const touch = e.touches[0];
+        handleMove(touch.clientX, touch.clientY);
+    } else if (e.touches.length === 2 && initialPinchDistance) {
+        const newPinchDistance = getDistance(e.touches);
+        const zoomFactor = newPinchDistance / initialPinchDistance;
+        
+        const dpr = window.devicePixelRatio || 1;
+        const centerX = (e.touches[0].clientX + e.touches[1].clientX) / 2 * dpr;
+        const centerY = (e.touches[0].clientY + e.touches[1].clientY) / 2 * dpr;
+
+        const newZoom = zoom * zoomFactor;
+
+        const mousePointX = (centerX - offsetX) / zoom;
+        const mousePointY = (centerY - offsetY) / zoom;
+
+        offsetX = centerX - mousePointX * newZoom;
+        offsetY = centerY - mousePointY * newZoom;
+        zoom = newZoom;
+        
+        initialPinchDistance = newPinchDistance;
+        redrawCanvas();
+    }
 });
-canvas.addEventListener('touchend', handleEnd);
+
+canvas.addEventListener('touchend', (e) => {
+    if (e.touches.length < 2) {
+        initialPinchDistance = null;
+    }
+    if (e.touches.length < 1) {
+        drawing = false;
+    }
+});
 canvas.addEventListener('touchcancel', handleEnd);
+
 
 window.addEventListener('keydown', (e) => {
     if (e.code === 'Space') {
@@ -231,6 +240,10 @@ clearButton.addEventListener('click', () => {
     }
     drawingHistory = [];
     redrawCanvas();
+});
+
+toggleControls.addEventListener('click', () => {
+    controls.classList.toggle('hidden');
 });
 
 let ws;
@@ -290,6 +303,21 @@ function connectWebSocket() {
     };
 }
 
+// Simple throttle function
+function throttle(func, limit) {
+    let inThrottle;
+    return function() {
+        const args = arguments;
+        const context = this;
+        if (!inThrottle) {
+            func.apply(context, args);
+            inThrottle = true;
+            setTimeout(() => inThrottle = false, limit);
+        }
+    };
+}
+
 redrawCanvas();
 connectWebSocket();
 canvas.style.cursor = 'crosshair';
+controls.classList.add('hidden');

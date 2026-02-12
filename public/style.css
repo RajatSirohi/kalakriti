@@ -2,6 +2,7 @@ html, body {
     margin: 0;
     overflow: hidden;
     height: 100%;
+    font-family: sans-serif;
 }
 
 canvas {
@@ -9,17 +10,70 @@ canvas {
     background-color: #f0f0f0;
 }
 
-#controls {
+#roomInfo {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background-color: rgba(255, 255, 255, 0.8);
+    padding: 5px 15px;
+    border-radius: 5px;
+    text-align: right;
+}
+
+#roomInfo h1 {
+    font-size: 1.2em;
+    margin: 0;
+}
+
+#roomInfo p {
+    font-size: 0.8em;
+    margin: 5px 0 0;
+}
+
+#controlsContainer {
     position: absolute;
     top: 10px;
     left: 10px;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+}
+
+#toggleControls {
+    width: 40px;
+    height: 40px;
+    font-size: 24px;
+    border-radius: 5px;
+    border: 1px solid #ccc;
+    background-color: rgba(255, 255, 255, 0.8);
+    cursor: pointer;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+#toggleControls:hover {
+    background-color: rgba(255, 255, 255, 1);
+}
+
+#controls {
     background-color: rgba(255, 255, 255, 0.8);
     padding: 10px;
     border-radius: 5px;
     display: flex;
     flex-direction: column;
     gap: 10px;
+    transition: opacity 0.3s, transform 0.3s;
+    transform-origin: top left;
 }
+
+#controls.hidden {
+    opacity: 0;
+    transform: scale(0.95);
+    pointer-events: none;
+}
+
 
 #quickColors {
     display: flex;

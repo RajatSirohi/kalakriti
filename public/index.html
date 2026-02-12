@@ -13,22 +13,25 @@
     </div>
     <canvas id="drawingCanvas"></canvas>
 
-    <div id="controls">
-        <label for="colorPicker">Color:</label>
-        <input type="color" id="colorPicker" value="#000000">
+    <div id="controlsContainer">
+        <button id="toggleControls" title="Toggle Controls">🎨</button>
+        <div id="controls">
+            <label for="colorPicker">Color:</label>
+            <input type="color" id="colorPicker" value="#000000">
 
-        <div id="quickColors">
-            <button class="quick-color-btn" style="background-color: #000000;" data-color="#000000"></button>
-            <button class="quick-color-btn" style="background-color: #FF0000;" data-color="#FF0000"></button>
-            <button class="quick-color-btn" style="background-color: #00FF00;" data-color="#00FF00"></button>
-            <button class="quick-color-btn" style="background-color: #0000FF;" data-color="#0000FF"></button>
+            <div id="quickColors">
+                <button class="quick-color-btn" style="background-color: #000000;" data-color="#000000"></button>
+                <button class="quick-color-btn" style="background-color: #FF0000;" data-color="#FF0000"></button>
+                <button class="quick-color-btn" style="background-color: #00FF00;" data-color="#00FF00"></button>
+                <button class="quick-color-btn" style="background-color: #0000FF;" data-color="#0000FF"></button>
+            </div>
+
+            <label for="strokeWidth">Stroke Width:</label>
+            <input type="range" id="strokeWidth" min="1" max="20" value="5">
+            <span id="strokeWidthValue">5</span>
+
+            <button id="clearButton">Clear</button>
         </div>
-
-        <label for="strokeWidth">Stroke Width:</label>
-        <input type="range" id="strokeWidth" min="1" max="20" value="5">
-        <span id="strokeWidthValue">5</span>
-
-        <button id="clearButton">Clear</button>
     </div>
 
     <script src="app.js"></script>
