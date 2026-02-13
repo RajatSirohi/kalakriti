@@ -1,5 +1,8 @@
 const canvas = document.getElementById('drawingCanvas');
 const ctx = canvas.getContext('2d');
+const bufferCanvas = document.createElement('canvas');
+const bufferCtx = bufferCanvas.getContext('2d');
+
 const colorPicker = document.getElementById('colorPicker');
 const strokeWidthInput = document.getElementById('strokeWidth');
 const strokeWidthValueSpan = document.getElementById('strokeWidthValue');
@@ -13,18 +16,22 @@ let drawing = false;
 let currentColor = colorPicker.value;
 let currentStrokeWidth = parseInt(strokeWidthInput.value);
 let drawingHistory = [];
+let currentPath = [];
 
-// Zoom and Pan state
 let zoom = 1;
 let offsetX = 0;
 let offsetY = 0;
 let isPanning = false;
+let isGesturing = false;
 let lastMouseX = 0;
 let lastMouseY = 0;
 let initialPinchDistance = null;
+let gestureTimeout;
 
-ctx.lineCap = 'round';
-ctx.lineJoin = 'round';
+[ctx, bufferCtx].forEach(c => {
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
+});
 
 function getTransformedPoint(x, y) {
     const dpr = window.devicePixelRatio || 1;
@@ -34,47 +41,117 @@ function getTransformedPoint(x, y) {
     };
 }
 
+function drawGrid(context) {
+    const dpr = window.devicePixelRatio || 1;
+    const screenWidth = context.canvas.width;
+    const screenHeight = context.canvas.height;
 
-function redrawCanvas() {
+    // Determine grid spacing based on zoom
+    const baseSpacing = 100; // The spacing at zoom = 1
+    let spacing = baseSpacing;
+    while (spacing * zoom < 50) {
+        spacing *= 5;
+    }
+    while (spacing * zoom > 150) {
+        spacing /= 5;
+    }
+    
+    const lineCountX = screenWidth / (spacing * zoom);
+    const lineCountY = screenHeight / (spacing * zoom);
+
+    context.strokeStyle = '#e9e9e9';
+    context.lineWidth = 1 / dpr;
+    context.beginPath();
+
+    const startX = Math.floor(-offsetX / (spacing * zoom)) * spacing;
+    const startY = Math.floor(-offsetY / (spacing * zoom)) * spacing;
+    const endX = startX + (screenWidth / zoom) + spacing;
+    const endY = startY + (screenHeight / zoom) + spacing;
+    
+    for (let x = startX; x < endX; x += spacing) {
+        context.moveTo(x, startY);
+        context.lineTo(x, endY);
+    }
+    for (let y = startY; y < endY; y += spacing) {
+        context.moveTo(startX, y);
+        context.lineTo(endX, y);
+    }
+    context.stroke();
+}
+
+
+function redrawBuffer() {
+    const dpr = window.devicePixelRatio || 1;
+    bufferCanvas.width = window.innerWidth * dpr;
+    bufferCanvas.height = window.innerHeight * dpr;
+    bufferCtx.setTransform(1, 0, 0, 1, 0, 0);
+    // Clear with a specific background color
+    bufferCtx.fillStyle = '#f4f4f4';
+    bufferCtx.fillRect(0, 0, bufferCanvas.width, bufferCanvas.height);
+    
+    bufferCtx.save();
+    bufferCtx.translate(offsetX, offsetY);
+    bufferCtx.scale(zoom, zoom);
+
+    // Draw the grid first
+    drawGrid(bufferCtx);
+    
+    drawingHistory.forEach(stroke => drawStroke(bufferCtx, stroke));
+    bufferCtx.restore();
+    requestAnimationFrame(drawFrame);
+}
+
+function drawFrame() {
     const dpr = window.devicePixelRatio || 1;
     canvas.width = window.innerWidth * dpr;
     canvas.height = window.innerHeight * dpr;
-    canvas.style.width = window.innerWidth + 'px';
-    canvas.style.height = window.innerHeight + 'px';
+    canvas.style.width = `${window.innerWidth}px`;
+    canvas.style.height = `${window.innerHeight}px`;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bufferCanvas, 0, 0);
 
-    ctx.save();
-    ctx.translate(offsetX, offsetY);
-    ctx.scale(zoom, zoom);
-
-    ctx.clearRect(-offsetX / zoom, -offsetY / zoom, canvas.width / zoom, canvas.height / zoom);
-
-    drawingHistory.forEach(stroke => drawStroke(stroke));
-
-    ctx.restore();
+    if (currentPath.length > 1) {
+        ctx.save();
+        ctx.translate(offsetX, offsetY);
+        ctx.scale(zoom, zoom);
+        drawStroke(ctx, { points: currentPath, color: currentColor, width: currentStrokeWidth });
+        ctx.restore();
+    }
 }
 
-function drawStroke(stroke) {
-    ctx.strokeStyle = stroke.color;
-    ctx.lineWidth = stroke.width;
-    ctx.beginPath();
-    ctx.moveTo(stroke.x1, stroke.y1);
-    ctx.lineTo(stroke.x2, stroke.y2);
-    ctx.stroke();
+function drawStroke(context, stroke) {
+    if (!stroke.points || stroke.points.length < 2) {
+        // Handle old segment-based format for backward compatibility if needed
+        if (stroke.x1 !== undefined) {
+            context.strokeStyle = stroke.color;
+            context.lineWidth = stroke.width;
+            context.beginPath();
+            context.moveTo(stroke.x1, stroke.y1);
+            context.lineTo(stroke.x2, stroke.y2);
+            context.stroke();
+        }
+        return;
+    }
+    context.strokeStyle = stroke.color;
+    context.lineWidth = stroke.width;
+    context.beginPath();
+    context.moveTo(stroke.points[0].x, stroke.points[0].y);
+    for (let i = 1; i < stroke.points.length; i++) {
+        context.lineTo(stroke.points[i].x, stroke.points[i].y);
+    }
+    context.stroke();
 }
 
-
-window.addEventListener('resize', redrawCanvas);
-
-
-colorPicker.addEventListener('change', (e) => {
-    currentColor = e.target.value;
+window.addEventListener('resize', () => {
+    redrawBuffer();
 });
 
+colorPicker.addEventListener('change', (e) => { currentColor = e.target.value; });
 strokeWidthInput.addEventListener('input', (e) => {
     currentStrokeWidth = parseInt(e.target.value);
     strokeWidthValueSpan.textContent = currentStrokeWidth;
 });
-
 quickColorButtons.forEach(button => {
     button.addEventListener('click', () => {
         const selectedColor = button.getAttribute('data-color');
@@ -83,61 +160,71 @@ quickColorButtons.forEach(button => {
     });
 });
 
-let lastX = 0;
-let lastY = 0;
-
 function handleStart(clientX, clientY) {
     if (isPanning) {
+        handleGestureStart();
         [lastMouseX, lastMouseY] = [clientX, clientY];
         return;
     }
     drawing = true;
-    const point = getTransformedPoint(clientX, clientY);
-    [lastX, lastY] = [point.x, point.y];
+    currentPath = [getTransformedPoint(clientX, clientY)];
 }
 
-const handleMove = throttle((clientX, clientY) => {
-    if (isPanning) {
+function handleMove(clientX, clientY) {
+    if (isPanning && isGesturing) {
         const dx = clientX - lastMouseX;
         const dy = clientY - lastMouseY;
         const dpr = window.devicePixelRatio || 1;
         offsetX += dx * dpr;
         offsetY += dy * dpr;
         [lastMouseX, lastMouseY] = [clientX, clientY];
-        redrawCanvas();
+        requestAnimationFrame(drawFrame);
         return;
     }
-
     if (!drawing) return;
-
-    const point = getTransformedPoint(clientX, clientY);
-    const newX = point.x;
-    const newY = point.y;
-
-    const stroke = {
-        x1: lastX,
-        y1: lastY,
-        x2: newX,
-        y2: newY,
-        color: currentColor,
-        width: currentStrokeWidth
-    };
-
-    drawingHistory.push(stroke);
-    drawStroke(stroke); // Draw the new stroke immediately
-    redrawCanvas();
-
-
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'draw', data: stroke }));
-    }
-
-    [lastX, lastY] = [newX, newY];
-}, 16); // Throttle to ~60fps
+    currentPath.push(getTransformedPoint(clientX, clientY));
+    requestAnimationFrame(drawFrame);
+}
 
 function handleEnd() {
+    if (drawing && currentPath.length > 1) {
+        const newStroke = {
+            points: currentPath,
+            color: currentColor,
+            width: currentStrokeWidth
+        };
+        drawingHistory.push(newStroke);
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'draw', data: newStroke }));
+        }
+        
+        // Apply transform to buffer before drawing the final stroke
+        bufferCtx.save();
+        bufferCtx.translate(offsetX, offsetY);
+        bufferCtx.scale(zoom, zoom);
+        drawStroke(bufferCtx, newStroke); // Finalize path on buffer
+        bufferCtx.restore();
+    }
     drawing = false;
-    initialPinchDistance = null;
+    currentPath = [];
+    if (isGesturing) {
+        handleGestureEnd();
+    }
+}
+
+function handleGestureStart() {
+    isGesturing = true;
+    clearTimeout(gestureTimeout);
+}
+
+function handleGestureEnd() {
+    clearTimeout(gestureTimeout);
+    gestureTimeout = setTimeout(() => {
+        if (isGesturing) {
+            isGesturing = false;
+            redrawBuffer();
+        }
+    }, 100);
 }
 
 canvas.addEventListener('mousedown', (e) => handleStart(e.clientX, e.clientY));
@@ -145,118 +232,111 @@ canvas.addEventListener('mousemove', (e) => handleMove(e.clientX, e.clientY));
 canvas.addEventListener('mouseup', handleEnd);
 canvas.addEventListener('mouseout', handleEnd);
 
-function getDistance(touches) {
-    return Math.sqrt(Math.pow(touches[0].clientX - touches[1].clientX, 2) + Math.pow(touches[0].clientY - touches[1].clientY, 2));
-}
+function getDistance(touches) { return Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY); }
 
 canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
     if (e.touches.length === 1) {
-        drawing = true;
-        const touch = e.touches[0];
-        handleStart(touch.clientX, touch.clientY);
-    } else if (e.touches.length === 2) {
+        handleStart(e.touches[0].clientX, e.touches[0].clientY);
+    } else if (e.touches.length >= 2) {
         drawing = false;
+        currentPath = [];
+        handleGestureStart();
         initialPinchDistance = getDistance(e.touches);
-    } else {
-        drawing = false;
+        [lastMouseX, lastMouseY] = [(e.touches[0].clientX + e.touches[1].clientX) / 2, (e.touches[0].clientY + e.touches[1].clientY) / 2];
     }
-});
+}, { passive: false });
 
 canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
     if (e.touches.length === 1 && drawing) {
-        const touch = e.touches[0];
-        handleMove(touch.clientX, touch.clientY);
+        handleMove(e.touches[0].clientX, e.touches[0].clientY);
     } else if (e.touches.length === 2 && initialPinchDistance) {
         const newPinchDistance = getDistance(e.touches);
         const zoomFactor = newPinchDistance / initialPinchDistance;
-        
+        const currentCenterX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        const currentCenterY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
         const dpr = window.devicePixelRatio || 1;
-        const centerX = (e.touches[0].clientX + e.touches[1].clientX) / 2 * dpr;
-        const centerY = (e.touches[0].clientY + e.touches[1].clientY) / 2 * dpr;
-
+        const mouseX = currentCenterX * dpr;
+        const mouseY = currentCenterY * dpr;
+        const dx = currentCenterX - lastMouseX;
+        const dy = currentCenterY - lastMouseY;
+        offsetX += dx * dpr;
+        offsetY += dy * dpr;
         const newZoom = zoom * zoomFactor;
-
-        const mousePointX = (centerX - offsetX) / zoom;
-        const mousePointY = (centerY - offsetY) / zoom;
-
-        offsetX = centerX - mousePointX * newZoom;
-        offsetY = centerY - mousePointY * newZoom;
+        const mousePointX = (mouseX - offsetX) / zoom;
+        const mousePointY = (mouseY - offsetY) / zoom;
+        offsetX = mouseX - mousePointX * newZoom;
+        offsetY = mouseY - mousePointY * newZoom;
         zoom = newZoom;
-        
         initialPinchDistance = newPinchDistance;
-        redrawCanvas();
+        [lastMouseX, lastMouseY] = [currentCenterX, currentCenterY];
+        requestAnimationFrame(drawFrame);
     }
-});
+}, { passive: false });
 
 canvas.addEventListener('touchend', (e) => {
     if (e.touches.length < 2) {
         initialPinchDistance = null;
+        if (isGesturing) handleGestureEnd();
     }
     if (e.touches.length < 1) {
-        drawing = false;
+        if (drawing) handleEnd();
     }
 });
 canvas.addEventListener('touchcancel', handleEnd);
 
-
 window.addEventListener('keydown', (e) => {
-    if (e.code === 'Space') {
+    if (e.code === 'Space' && !isPanning) {
         isPanning = true;
         canvas.style.cursor = 'move';
     }
 });
-
 window.addEventListener('keyup', (e) => {
     if (e.code === 'Space') {
         isPanning = false;
         canvas.style.cursor = 'crosshair';
+        if (isGesturing) handleGestureEnd();
     }
 });
 
 canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
+    handleGestureStart();
     const dpr = window.devicePixelRatio || 1;
     const mouseX = e.clientX * dpr;
     const mouseY = e.clientY * dpr;
-    const zoomFactor = 1.1;
-
-    const wheel = e.deltaY < 0 ? 1 : -1;
-    const newZoom = zoom * Math.pow(zoomFactor, wheel);
-
+    const zoomFactor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+    const newZoom = Math.max(0.1, Math.min(zoom * zoomFactor, 20));
     const mousePointX = (mouseX - offsetX) / zoom;
     const mousePointY = (mouseY - offsetY) / zoom;
-
     offsetX = mouseX - mousePointX * newZoom;
     offsetY = mouseY - mousePointY * newZoom;
     zoom = newZoom;
-
-    redrawCanvas();
+    requestAnimationFrame(drawFrame);
+    handleGestureEnd();
 });
-
 
 clearButton.addEventListener('click', () => {
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'clear' }));
     }
     drawingHistory = [];
-    redrawCanvas();
+    currentPath = [];
+    redrawBuffer();
 });
 
-toggleControls.addEventListener('click', () => {
-    controls.classList.toggle('hidden');
-});
+toggleControls.addEventListener('click', () => { controls.classList.toggle('hidden'); });
 
 let ws;
 let roomId;
 
-function generateRoomId() {
-    return Math.random().toString(36).substring(2, 8);
-}
+function generateRoomId() { return Math.random().toString(36).substring(2, 8).toLowerCase(); }
 
 function getOrCreateRoomId() {
     const urlParams = new URLSearchParams(window.location.search);
     let id = urlParams.get('room');
-    if (!id || !/^[a-zA-Z0-9]{6}$/.test(id)) {
+    if (!id || !/^[a-z0-9]{6}$/.test(id)) {
         id = generateRoomId();
         window.history.replaceState(null, '', `?room=${id}`);
     }
@@ -269,55 +349,44 @@ roomIdDisplay.textContent = roomId;
 function connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${protocol}//${window.location.host}?room=${roomId}`);
-
     ws.onopen = () => console.log('Connected to WebSocket server');
-
     ws.onmessage = (event) => {
         const message = JSON.parse(event.data);
         switch (message.type) {
             case 'draw':
                 drawingHistory.push(message.data);
-                redrawCanvas();
+                // Apply transform to buffer before drawing the incoming stroke
+                bufferCtx.save();
+                bufferCtx.translate(offsetX, offsetY);
+                bufferCtx.scale(zoom, zoom);
+                drawStroke(bufferCtx, message.data);
+                bufferCtx.restore();
+                requestAnimationFrame(drawFrame);
                 break;
             case 'clear':
                 drawingHistory = [];
-                redrawCanvas();
+                currentPath = [];
+                redrawBuffer();
                 break;
             case 'history':
                 drawingHistory = message.data;
-                redrawCanvas();
+                redrawBuffer();
                 break;
             default:
                 console.warn('Unknown message type:', message.type);
         }
     };
-
     ws.onclose = () => {
         console.log('Disconnected from WebSocket server. Reconnecting in 3 seconds...');
         setTimeout(connectWebSocket, 3000);
     };
-
     ws.onerror = (error) => {
         console.error('WebSocket error:', error);
         ws.close();
     };
 }
 
-// Simple throttle function
-function throttle(func, limit) {
-    let inThrottle;
-    return function() {
-        const args = arguments;
-        const context = this;
-        if (!inThrottle) {
-            func.apply(context, args);
-            inThrottle = true;
-            setTimeout(() => inThrottle = false, limit);
-        }
-    };
-}
-
-redrawCanvas();
+redrawBuffer();
 connectWebSocket();
 canvas.style.cursor = 'crosshair';
 controls.classList.add('hidden');

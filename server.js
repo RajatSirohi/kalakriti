@@ -20,6 +20,35 @@ const server = http.createServer(app);
 // Instantiate WebSocket server
 const wss = new WebSocket.Server({ server });
 
+// Function to validate a stroke object
+function isValidStroke(stroke) {
+    if (!stroke || typeof stroke !== 'object') return false;
+
+    const { color, width } = stroke;
+    if (typeof color !== 'string' || !/^#[0-9a-f]{6}$/i.test(color)) return false;
+    if (typeof width !== 'number' || !isFinite(width) || width <= 0) return false;
+
+    // New path-based format
+    if (Array.isArray(stroke.points)) {
+        if (stroke.points.length < 2 || stroke.points.length > 1000) return false; // Path must have points, but not too many
+        for (const point of stroke.points) {
+            if (typeof point !== 'object' || typeof point.x !== 'number' || typeof point.y !== 'number' || !isFinite(point.x) || !isFinite(point.y)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Old segment-based format for compatibility
+    const { x1, y1, x2, y2 } = stroke;
+    if (typeof x1 === 'number' && typeof y1 === 'number' && typeof x2 === 'number' && typeof y2 === 'number') {
+        if (![x1, y1, x2, y2].every(isFinite)) return false;
+        return true;
+    }
+
+    return false;
+}
+
 wss.on('connection', (ws, req) => {
     const parameters = url.parse(req.url, true);
     const roomId = parameters.query.room;
@@ -81,6 +110,13 @@ wss.on('connection', (ws, req) => {
                     return;
                 }
                 const stroke = parsedMessage.data;
+
+                // Validate the stroke data
+                if (!isValidStroke(stroke)) {
+                    console.warn(`Received invalid stroke data from client in room ${ws.roomId}`);
+                    return; // Drop the message
+                }
+
                 room.history.push(stroke);
                 // Enforce max history length
                 if (room.history.length > 10000) {
